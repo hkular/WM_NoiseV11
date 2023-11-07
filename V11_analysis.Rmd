@@ -1,0 +1,1324 @@
+---
+title: "V11_analysis"
+output: html_document
+date: "2023-09-23"
+---
+
+### Load data and libraries, set plot themes, some data wrangling
+```{r, echo = FALSE}
+#load libraries
+library(tidyverse)
+library(BayesFactor)
+library(circular)
+library(viridis)
+
+# load data
+setwd('/Users/hkular/Documents/Github/noisefx/Starburst_V11')
+V11 <- read_csv('WM_noiseV11.csv')
+V11b <- read_csv('WM_noiseV11_bad.csv') # subjects we replaced
+
+# make numerical values that are factors actually factors
+V11$distractor <- factor(V11$distractor, levels = c(1,2,3), labels = c('none', 'ignore', 'attend'))
+V11$kappa <- factor(V11$kappa, levels = c(100, 5000), labels = c('high', 'low'))
+V11$change <- factor(V11$change, levels = c(10,-10), labels = c('ccw', 'cw')) 
+V11$dist <- factor(V11$dist, levels = c(114, 112, 117,115), labels = c('ccw', 'ccw', 'cw','cw'))
+
+
+V11b$distractor <- factor(V11b$distractor, levels = c(1,2,3), labels = c('none', 'ignore', 'attend'))
+V11b$kappa <- factor(V11b$kappa, levels = c(100, 5000), labels = c('high', 'low'))
+V11b$change <- factor(V11b$change, levels = c(10,-10), labels = c('ccw', 'cw')) 
+V11b$dist <- factor(V11b$dist, levels = c(114, 112, 117, 115), labels = c('ccw', 'ccw', 'cw','cw'))
+
+
+```
+## Individual subject quality check
+```{r}
+
+# If they withdraw from the experiment before completing all trials (n = 576)
+ntrials <- V11 %>% count(subject)
+ #V11 <- V11 %>% filter(!subject == insert attrition here)
+
+# Responded  to at least 90% of the distractors in the attend-distractor condition
+attendrespcheck <- V11 %>% group_by(subject) %>% filter(distractor == 'attend') %>% count(dist)
+attendrespcheck <- attendrespcheck %>% filter(is.na(dist))
+for(i in 1:nrow(attendrespcheck)){if (attendrespcheck$n[i]>(.1*ntrials$n[i]/3)) {
+  print(paste0('exclude subject ', attendrespcheck$subject[i], ' no response to attend'))
+}}
+
+# Responded to more than 10% of the distractors in the ignore-distractor condition
+ignorerespcheck <- V11 %>% group_by(subject) %>% filter(distractor == 'ignore') %>% count(dist)
+ignorerespcheck <- ignorerespcheck %>% filter(is.na(dist))
+for(i in 1:nrow(ignorerespcheck)){if (ignorerespcheck$n[i]<(.9*ntrials$n[i]/3)) {
+  print(paste0('exclude subject ', ignorerespcheck$subject[i], ' response to ignore'))
+}}
+  
+# Responded to at least 90% of the targets
+nonrespcheck <- V11 %>% group_by(subject) %>% count(resp)
+nonrespcheck <- nonrespcheck %>% filter(is.nan(resp))
+for(i in 1:nrow(nonrespcheck)){if (nonrespcheck$n[i] >(.1*ntrials$n[i])) {
+  print(paste0('exclude subject ', nonrespcheck$subject[i], ' no response to target'))
+  }}
+  
+# Subjects will be removed if there is evidence (i.e. a non uniform distribution) for responses clustered around the orientation of the distractor instead of around the memory target. Since the orientation of the memory target and the distractor are independent (counter-balanced), a cluster of responses around the distractor orientation would suggest non-compliance with task instructions. 
+taskcheck <- ggplot(V11, aes(x = distractorori, y = resp)) +
+  geom_point() +
+  facet_wrap(~subject)+
+  # Set the x-axis labels and tick marks
+  scale_x_continuous(
+    breaks = c(0, 45, 90, 135, 180),
+    labels = c("0°", "45°", "90°", "135°", "180°"),
+    limits = c(0, 180)
+  ) +
+  # Set the y-axis labels and tick marks
+  scale_y_continuous(
+    breaks = c(20, 40, 60, 80, 100, 120, 140, 160),
+    labels = c("20°", "40°", "60°", "80°", "100°", "120°", "140°", "160°"),
+    limits = c(0, 180)
+  ) +
+  # Add x-axis and y-axis titles
+  labs(x = "Distractor (degrees)", y = "Response (degrees)") 
+taskcheck # scatter plot distractor ori vs responded ori 
+  
+# The average measured performance error is greater than 49 degrees
+perfcheck = V11 %>% filter(!is.nan(resp))%>%
+  group_by(subject) %>%
+  summarize(circ_mean = mean.circular(circular((acc*pi/180))),
+            circ_sd = sd.circular(circular((acc*pi/180))),
+            .groups = "keep") %>%
+  mutate(id = as.factor(subject))
+for(i in 1:nrow(perfcheck)){if (perfcheck$circ_sd[i]*(180/pi) > 49) {
+  print(paste0('exclude subject ', perfcheck$subject[i], ' large behavior error'))
+  }}
+
+rm(attendrespcheck, ignorerespcheck, ntrials, taskcheck, perfcheck, nonrespcheck)
+```
+# remove bad subs
+```{r}
+# remove trials with NaN responses
+V11 <- V11 %>% filter(!is.nan(resp))
+
+# check RTs - for target this would be when they finished responding, not when they started - good to show error isn't running out of time
+targRT = V11 %>% filter(!is.nan(resp))%>%
+  group_by(subject) %>%
+  summarize(mean = mean(targRT, na.rm = TRUE),
+            sd = sd(targRT, na.rm = TRUE),
+            .groups = "keep")
+targRTavg = mean(targRT$mean) # 1.58 s out of 3
+
+
+# check RTs - for distractor response
+distRT = V11b %>% filter(!is.nan(resp))%>%
+  group_by(subject) %>%
+  summarize(mean = mean(distRT, na.rm = TRUE),
+            sd = sd(distRT, na.rm = TRUE),
+            .groups = "keep")
+distRTavgb = mean(distRT$mean) # .88 s out of (1.4:3.4 s)
+
+
+# compare to included removed subjects two sample t-test unequal variance (Welch's)
+(distRTtest.results = t.test(distRT$mean, distRTb$mean, var.equal = F)) # significantly different t=-2.49 p = .03
+(targRTtest.results = t.test(targRT$mean, targRTb$mean, var.equal = F)) # not significantly different t = -.83 p = 0.42
+
+# compare with Bayes t test
+(distRTtest.BF = ttestBF(x = distRT$mean, y = distRTb$mean, var.equal = F))
+(targRTtest.BF = ttestBF(x = targRT$mean, y = targRTb$mean, var.equal = F))
+
+
+# look at when misses were, early? later blocks? middle blocks?
+# filter (attend trials) plot block and counts
+V11b <- V11b %>%
+  group_by(subject) %>%
+  mutate(trial = row_number()) # now we have trial nums
+
+V11b<-V11b %>% group_by(subject) %>%
+  mutate(
+    block = rep(1:24, each = 24)) # now we have block nums
+
+nan_count <- V11b %>%
+  group_by(block) %>% filter(distractorname == "attend") %>%
+  summarize(count = sum(is.nan(distRT), na.rm = TRUE))
+
+ggplot(nan_count, aes(x = block, y = count)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    x = "Block Number",
+    y = "NaN Count",
+    title = "No response to attend"
+  ) +
+  theme_minimal()
+
+
+# look at when good subs miss attend response
+V11<-V11 %>% group_by(subject) %>%
+  mutate(
+    block = rep(1:24, each = 24)) # now we have block nums
+
+nan_count_g <- V11 %>%
+  group_by(block) %>% filter(distractorname == "attend") %>%
+  summarize(count = sum(is.nan(distRT), na.rm = TRUE))
+
+ggplot(nan_count_g, aes(x = block, y = count)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    x = "Block Number",
+    y = "NaN Count",
+    title = "No response to attend"
+  ) +
+  theme_minimal()
+
+# meeting notes 10.30.23
+# plot along with stairstep?
+# look at accuracy on distractor 
+dist_accb <- V11b %>% group_by(subject) %>%filter(distractorname != 'none', !is.na(distRT)) %>%
+  summarize(count = sum(dist == change, na.rm = TRUE), 
+            total = sum(!is.na(change), na.rm= TRUE) 
+            ) # looks like half the people were way below chance
+dist_acc <- V11 %>% group_by(subject) %>%filter(distractorname != 'none', !is.na(distRT)) %>%
+  summarize(count = sum(dist == change, na.rm = TRUE), 
+            total = sum(!is.na(change), na.rm= TRUE)
+            ) # everyone was around chance
+
+# DONE plot against chance
+# DONE - collate all data that works rectangle  high low noise across attention
+# reach out to Kiyonaga
+# serial dependence past drawn to recent past
+# analysis then write observations, high noise with more attraction? - then memory stimulus attracted to sensory, sensory noise making memory worse, attention to distractor memory worse and increasing attraction
+# look for literature that looks at each of these three things - serial dependence literature: sensory noise, working memory - what is driving those effects
+ggplot() +
+  geom_boxplot(data = dist_acc, aes(x = factor(1), y = (count / total)), fill = "lightblue", alpha = 0.4) +
+  geom_point(data = dist_acc, aes(x = factor(1), y = (count / total)), position = position_jitter(), color = "blue") +
+  geom_boxplot(data = dist_accb, aes(x = factor(2), y = (count / total)), fill = "pink", alpha= 0.4) +
+  geom_point(data = dist_accb, aes(x = factor(2), y = (count / total)), position = position_jitter(), color = "red") +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "purple") +  # Add the horizontal line
+  annotate("text", x = 1.5, y = 0.5, label = "chance", vjust = -1, hjust = 0, color = "purple") +  # Add the label
+  labs(
+    x = "Subjects",
+    y = "Accuracy",
+    title = "Distractor response accuracy"
+  )+
+  scale_x_discrete(labels = c("Good", "Bad"))
+
+# shorten time window for wiggle?
+# are you more attracted to distractor when stimulus noise is high
+# two interaction for ignore vs attend? blue bars change green ones don't
+
+# DONE do bayes t test on delta between green and blue within distractor condition, equal to 2 way anova in frequentist terms
+# DONE we think attend is impacting attraction, look at high vs low collapse across attention
+
+# DONE 3 bins of data: around cardinal (-15,15) and (75,90) (-75,90) , 1 negative oblique bin (-30,-60) (30,60), 1 positive oblique bin, bar graph for four conditions(probably won't have enough power to do moving average graph)
+# suggests perceptual interference
+# sensory noise effect, attention effect, no interaction, target distractor attractive bias, Weird! strong form of sensory recruitment what is and isn't consistent?
+# here is what is inconsistent? what do we need to extend to explain?
+# relationship with Tim's work?
+# write out the story, 
+# account of error at encoding, then bias is not bigger.this connects with Curtis work on recoding. you do remember in sensory format but not picture like, commit to an internal rep storing same machinery used for sensory process but you're not holding onto noisy thing, taking best interpretation and storing it, but shouldn't be any more susceptible to bias
+# alternative verbal coding - green bars aren't different
+# green bars null result and trend
+# next expt: sample size 12, double number of trials, drop no distractor trials?
+# green bars aren't different and blue bars are we want to quantify that interaction because it suggests differential coding strategy
+# then disrupt verbal coding if that is true
+
+```
+# CircStats
+```{r}
+
+dfV11.circstats = V11 %>%
+  group_by(subject, kappa, distractor) %>%
+  summarize(circ_mean = mean.circular(circular((acc*pi/180))),
+            circ_sd = sd.circular(circular((acc*pi/180))),
+            .groups = "keep") %>%
+  mutate(id = as.factor(subject))
+
+n_subj = n_distinct(dfV11.circstats$subject)
+       
+dfV11.circstats_plt = dfV11.circstats %>%
+  group_by(kappa, distractor) %>%
+  summarize(mean_sd = mean(circ_sd),
+            sd_sd = sd(circ_sd),
+            se_sd = sd_sd/sqrt(n_subj),
+            .groups = "keep") %>%
+  ungroup()
+
+```
+# Plots CircStats
+```{r}
+cs = viridis(20)
+dfV11.circstats_plt$mean_sd_deg <- (dfV11.circstats_plt$mean_sd*(180/pi))
+dfV11.circstats_plt$se_sd_deg <- (dfV11.circstats_plt$se_sd*(180/pi))
+dfV11.circstats_plt %>%
+  ggplot(aes(x=distractor, y=mean_sd_deg, fill=kappa)) + 
+  geom_bar(stat="identity", position=position_dodge2(preserve="single")) +
+  geom_errorbar(aes(ymin=mean_sd_deg-se_sd_deg, ymax=mean_sd_deg+se_sd_deg), width=.2,
+                 position=position_dodge(.9)) +
+  labs(x="Distractor",y="Error (\u00B0)") +
+  #facet_wrap(~task)+
+  scale_fill_manual(name="Stimulus Noise", labels = c('High',"Low"),
+                    values = c(cs[13], cs[4])) +
+  scale_x_discrete(labels=c("None","Ignore", "Attend")) +
+  #annotate('text', label='V8', x=-Inf, y=Inf, hjust=0, vjust=1)+ # label version
+  theme(panel.grid.major.x = element_blank(), panel.background = element_blank(),
+        panel.grid = element_line(color = "gray"), text = element_text(size=15))
+
+#ggsave(plot = last_plot(), filename="plots/V11.eps", width=6.5, height=3,dpi=400)
+```
+# BF mixed effects anova
+```{r}
+# V11
+(BFrmV11 <- anovaBF(circ_sd ~ kappa + distractor + kappa:distractor + id,
+data = dfV11.circstats, whichRandom = "id", whichModels = 'all') )# Bayesian mixed effects ANOVA
+BFrmV11[7]/BFrmV11[4] # evidence of interaction with main effects accounted for
+
+```
+# Bins of difference between distractor and target
+``` {r}
+V11$bin <- V11 %>% 
+
+```
+# BF compare ignore and attend trials
+```{r}
+
+(BFrmV11d <- anovaBF(circ_sd ~ kappa + distractor + kappa:distractor + id,
+data = dfV11.circstats[dfV11.circstats$distractor != 'none',], whichRandom = "id", whichModels = 'all'))# Bayesian mixed effects ANOVA
+# lose distractor effect with no none condition so ignore attend not that different
+BFrmV11d[7]/BFrmV11d[4] # evidence of interaction with main effects accounted for
+
+# BF t test
+(ignore_attend_BFttest <- ttestBF(x = dfV11.circstats[dfV11.circstats$distractor == 'ignore',]$circ_sd, y = dfV11.circstats[dfV11.circstats$distractor == 'attend',]$circ_sd, var.eq = T)) # not different
+
+# look at low noise condition only
+(ignore_attend_BFttest <- ttestBF(x = dfV11.circstats[dfV11.circstats$distractor == 'ignore' & dfV11.circstats$kappa == 'low' ,]$circ_sd, y = dfV11.circstats[dfV11.circstats$distractor == 'attend' & dfV11.circstats$kappa == 'low',]$circ_sd, var.eq = T)) # different
+# high noise condition only 
+(ignore_attend_BFttest <- ttestBF(x = dfV11.circstats[dfV11.circstats$distractor == 'ignore' & dfV11.circstats$kappa == 'high' ,]$circ_sd, y = dfV11.circstats[dfV11.circstats$distractor == 'attend' & dfV11.circstats$kappa == 'high',]$circ_sd, var.eq = T)) # not different
+
+
+# two interaction for ignore vs attend? blue bars change green ones don't
+# do bayes t test on delta between green and blue within distractor condition, equal to 2 way anova in frequentist terms
+(twoway_BFtest <- ttestBF(
+  x  = dfV11.circstats[dfV11.circstats$distractor == 'ignore' & dfV11.circstats$kappa == 'low',]$circ_sd - dfV11.circstats[dfV11.circstats$distractor == 'ignore' & dfV11.circstats$kappa == 'high',]$circ_sd,
+  y = dfV11.circstats[dfV11.circstats$distractor == 'attend' & dfV11.circstats$kappa == 'low',]$circ_sd - dfV11.circstats[dfV11.circstats$distractor == 'attend' & dfV11.circstats$kappa == 'high',]$circ_sd,
+  var.eq = T)) # BF = 0.35
+
+```
+# partial eta squared
+```{r}
+
+# partial eta squared for effect size
+V11_aov <- dfV11.circstats %>%
+  aov(circ_sd ~ kappa + distractor + Error(id) +distractor:kappa, data=.)
+DescTools::EtaSq(V11_aov, type = 1)
+# kappa large effect, distractor medium effect, interaction no effect
+
+```
+# look at bias
+```{r}
+
+# scatter plot presented ori vs responded ori - subject 1 doesn't look like they even tried to do the task
+  ggplot(V11, aes(x = orient, y = resp, color = kappa)) +
+  geom_point() +
+  facet_wrap(~subject)+
+  # Set the x-axis labels and tick marks
+  scale_x_continuous(
+    breaks = c(0, 45, 90, 135, 180),
+    labels = c("0°", "45°", "90°", "135°", "180°"),
+    limits = c(0, 180)
+  ) +
+  # Set the y-axis labels and tick marks
+  scale_y_continuous(
+    breaks = c(20, 40, 60, 80, 100, 120, 140, 160),
+    labels = c("20°", "40°", "60°", "80°", "100°", "120°", "140°", "160°"),
+    limits = c(0, 180)
+  ) +
+  # Add x-axis and y-axis titles
+  labs(x = "Target (degrees)", y = "Response (degrees)", color = 'Noise condition') +
+  # Add a color scale legend
+  scale_color_manual(values = c(cs[13], cs[8],cs[4])) +
+  # Add a size scale legend
+  scale_size(range = c(2, 8)) 
+
+# response as a function of distractor
+  V11%>% filter(distractor != 'absent') %>%
+  ggplot(aes(x = resp, y = distractorori, color = kappa)) +
+  geom_point() +
+  facet_wrap(~subject)+
+  # Set the x-axis labels and tick marks
+  scale_x_continuous(
+    breaks = c(0, 45, 90, 135, 180),
+    labels = c("0°", "45°", "90°", "135°", "180°"),
+    limits = c(0, 180)
+  ) +
+  # Set the y-axis labels and tick marks
+  scale_y_continuous(
+    breaks = c(20, 40, 60, 80, 100, 120, 140, 160),
+    labels = c("20°", "40°", "60°", "80°", "100°", "120°", "140°", "160°"),
+    limits = c(0, 180)
+  ) +
+  # Add x-axis and y-axis titles
+  labs(x = "Distractor (degrees)", y = "Response (degrees)", color = 'Noise condition') +
+  # Add a color scale legend
+  scale_color_manual(values = c(cs[13], cs[8],cs[4])) +
+  # Add a size scale legend
+  scale_size(range = c(2, 8)) 
+
+# scatter plot distractorori vs target ori
+  V11%>% filter(distractor != 'absent') %>%
+  ggplot(aes(x = orient, y = distractorori, color = kappa)) +
+  geom_point() +
+  facet_wrap(~subject)+
+  # Set the x-axis labels and tick marks
+  scale_x_continuous(
+    breaks = c(0, 45, 90, 135, 180),
+    labels = c("0°", "45°", "90°", "135°", "180°"),
+    limits = c(0, 180)
+  ) +
+  # Set the y-axis labels and tick marks
+  scale_y_continuous(
+    breaks = c(20, 40, 60, 80, 100, 120, 140, 160),
+    labels = c("20°", "40°", "60°", "80°", "100°", "120°", "140°", "160°"),
+    limits = c(0, 180)
+  ) +
+  # Add x-axis and y-axis titles
+  labs(x = "Distractor (degrees)", y = "Response (degrees)", color = 'Noise condition') +
+  # Add a color scale legend
+  scale_color_manual(values = c(cs[13], cs[8],cs[4])) +
+  # Add a size scale legend
+  scale_size(range = c(2, 8)) 
+  
+
+  
+# cardinal bias - error as a function of target orientation
+V11$origroup <- findInterval(V11$orient, c(seq(0,180, by = 15)))
+data_origroup <- V11 %>% filter(!is.nan(acc)) %>% group_by(origroup) %>% summarise_at(vars(acc), list(avg = mean, sdev = sd))
+V11$acc %>% mean(na.rm = TRUE)
+data_origroup <-data_origroup %>% mutate(origroup = recode(origroup, '1'= 0, '2'= 15, '3' = 30, '4' = 45, '5' = 60, '6' = 75, '7' = 90, '8' = 105, '9' = 120, '10' = 135, '11' = 150, '12' = 165, '13' = 180))
+
+plotcard <- data_origroup %>%
+  ggplot(aes(x=origroup, y= avg))+
+  geom_point()+
+  geom_hline(yintercept = 0, linetype=2)+
+  labs(x = 'Stimulus orientation (deg)', y = 'Mean |error| (deg)')+
+  scale_x_continuous(breaks = c(0,45,90,135,180),labels = c(0,45,90,135,180))+
+  #scale_x_binned(n.breaks = 5,labels = c(0,45,90,135,180))+
+  #geom_errorbar(aes(ymin = -sdev, ymax = sdev), width = .05, position = position_dodge(.9))+
+  theme_classic()+
+  theme(text = element_text(size =20))
+plotcard
+  
+
+```
+# distractor bias
+```{r}
+  
+## now try my own version of showing the distractor bias on the target, averaged across subjects
+
+ # signed responses at each target-distractor difference:
+V11D<- V11 %>% filter(distractor != "none") %>% filter(!is.nan(acc)) %>% filter(!is.nan(distractorori)) %>% filter(kappa == 'high')
+  delta_orient <- matrix(data=NA,nrow=3,ncol=length(V11D$orient))
+  delta_orient[1, ] <- (abs(V11D$orient - V11D$distractorori))
+  delta_orient[2, ] <- (abs((360 - (delta_orient[1, ] * 2)) / 2))
+  delta_orient[3, ] <- 360 - delta_orient[1, ]
+  delta_orient <- apply(delta_orient, 2, min)
+  
+  # Add minus signs back in
+  delta_orient[((V11D$orient - delta_orient) %% 360) == V11D$distractorori] <- -delta_orient[((V11D$orient - delta_orient) %% 360) == V11D$distractorori]
+  delta_orient[(((V11D$orient + 180) - delta_orient) %% 360) == V11D$distractorori] <- -delta_orient[(((V11D$orient + 180) - delta_orient) %% 360) == V11D$distractorori]
+    
+    dist_deltas <- delta_orient
+    sorted_delta <- cbind.data.frame(dist_deltas, acc = V11D$acc)
+    sorted_delta[sorted_delta$dist_deltas == -90, 1] <- 90  # turn -90º into 90º
+    #sorted_delta <- arrange(sorted_delta, dist_deltas)  # sort by
+V11D$deltaDT <- sorted_delta$dist_deltas
+
+# These data were normalized by first subtracting out individual-subject means, and the resultant within-subject
+# average is depicted by the white lines. Black error areas represent bootstrapped 95% confidence intervals on the within-subject data
+# (across all possible target-distractor differences). The single data points presented on the far right of each subplot are from the 10% of
+# trials where no distractor was shown during the delay. 
+
+# get circular mean error for 13 windows of 15 degrees of distractor-target (-89, 90)
+
+library(pracma, include.only = c('deg2rad', 'rad2deg')) # include multiple functions
+win_size <- 13
+space1 <- (1:180)
+space2 <- (-89:90)
+mean_output_delta<- array(NA, dim = c(180,length(unique(V11D$subject))))
+for (n in 1:length(unique(V11D$subject))){
+  df<- cbind(DT = V11D$deltaDT[V11D$subject == unique(V11D$subject)[n]], acc = V11D$acc[V11D$subject == unique(V11D$subject)[n]])
+  sorted_delta <- df[order(df[,1],decreasing=FALSE),]
+for (dg in 1:180){
+        orients_to_include <- seq(dg - ((win_size - 1) / 2),dg + ((win_size - 1) / 2),1) 
+        orients_to_include <- (orients_to_include + 360) %% 180
+        orients_to_include[orients_to_include == 0] <- 180
+        orients_to_include_delta <- space2[space1 %in% orients_to_include]
+        smooth_runner_delta <- matrix(NA, ncol = 2)
+      for (num_orients in 1: length(orients_to_include_delta)){
+        smooth_runner_delta <- rbind(smooth_runner_delta, sorted_delta[sorted_delta[, 1] == orients_to_include_delta[num_orients], ])
+      } # end for num_orients
+        #smooth_runner_delta <- smooth_runner_delta[-1,]
+       mean_output_delta[dg, n] <- rad2deg(mean.circular(circular(deg2rad(smooth_runner_delta[,2])*2),  na.rm = TRUE))/2
+        } # end for dg 
+} # end for n
+
+  nboot <- 5000  # Number of bootstraps
+  resampleMEAN <- matrix(NA, nboot, 180)  # Preallocate space for results
+# Do bootstraps
+for (i in 1:nboot) {
+  ind <- sample(1:ncol(mean_output_delta), ncol(mean_output_delta), replace = TRUE)
+  resampleMEAN[i,] <- rowMeans(mean_output_delta[,ind] - matrix(colMeans(mean_output_delta[,ind]), nrow = 180, ncol = length(ind), byrow = TRUE))
+}
+  
+# Compute the percentile on this iteration
+CIs <- matrix(NA, ncol = 2, nrow = 180)
+for (i in 1:180){
+CIs[i,] <- quantile(resampleMEAN[,i], probs = c(0.025, 0.975))}
+CIs<- t(CIs)
+
+# Plot the confidence intervals
+ggplot(data.frame(x = -89:90, y1 = CIs[1, 1:180], y2 = CIs[2, 1:180])) +
+  geom_ribbon(aes(x = x, ymin = y1, ymax = y2), fill = rgb(0.3, 0.3, 0.3), alpha = 0.5) +
+  # Add the mean line
+  geom_line(
+    data = data.frame(
+      x = -89:90,
+      y = rowMeans(mean_output_delta[1:180, ] - rep(mean(mean_output_delta),180))
+    ), aes(x = x, y = y), color = rgb(0.3, 0.3, 0.3), size = 2) +
+  # Adjust the plot
+  scale_x_continuous(breaks = c(-90, -60, -30, 0, 30, 60, 90),
+                     limits = c(-90, 90)) +
+  # scale_y_continuous(limits = c(-20, 20),
+  #                    breaks = seq(-10, 10, by = 2)) + 
+  labs(x = "distractor-target (º)", y = "error (º)") +
+  theme_minimal() +
+  
+  # Add vertical line at x = 0
+  geom_vline(xintercept = 0, color = "black")
+ 
+
+# okay now logistic regression - this is wrong because circular variable as predictor and response
+# Fit logistic regression model
+# V11D <- V11D %>% mutate(cworccw = ifelse(acc > 0, 1, 0)) # ccw is 1 and cw is 0
+# model <- glm(cworccw ~ deltaDT, data = V11D, family = binomial(link = "logit"))
+# summary(model)
+
+# do circular regression - bayesian glm
+library(circglmbayes) # don't forget that had to install gcc and create /.R/Makevars file pointing to fortran file to get this
+```
+Look at bias separate ignore and attend
+```{r}
+# redid before change distractor =='none' to 'attend' 'ignore' and then save variables -- in future make this for loop across distractor conditions
+# Plot the confidence intervals for both
+ggplot(data.frame(x = -89:90)) +
+  geom_ribbon(aes(x = x, ymin = CIs_ignore[1, 1:180], ymax = CIs_ignore[2, 1:180]), fill = rgb(0.0, 0.1, 0.5), alpha = 0.5) +
+  # Add the mean line
+  geom_line(
+    data = data.frame(
+      x = -89:90,
+      y = rowMeans(mean_output_delta_ignore[1:180, ] - rep(mean(mean_output_delta_ignore),180))
+    ), aes(x = x, y = y, linetype = 'Ignore'), color = rgb(0.0, 0.1, 0.5), size = 2) +
+  geom_ribbon(aes(x = x, ymin = CIs_attend[1, 1:180], ymax = CIs_attend[2, 1:180]), fill = rgb(0.5, 0.1, 0.1), alpha = 0.5) +
+  # Add the mean line
+  geom_line(
+    data = data.frame(
+      x = -89:90,
+      y = rowMeans(mean_output_delta_attend[1:180, ] - rep(mean(mean_output_delta_attend),180))
+    ), aes(x = x, y = y, linetype = 'Attend'), color = rgb(0.5, 0.1, 0.1), size = 2) +
+  # Adjust the plot
+  scale_x_continuous(breaks = c(-90, -60, -30, 0, 30, 60, 90),
+                     limits = c(-90, 90)) +
+  # scale_y_continuous(limits = c(-20, 20),
+  #                    breaks = seq(-10, 10, by = 2)) + 
+  labs(x = "distractor-target (º)", y = "error (º)", linetype = "Distractor") +
+  theme_minimal() +
+  
+  # Add vertical line at x = 0
+  geom_vline(xintercept = 0, color = "black")
+ 
+```
+# look at high versus low
+```{r}
+
+ # signed responses at each target-distractor difference:
+V11D<- V11 %>% filter(distractor != "none" & !is.nan(acc) & !is.nan(distractorori))
+  delta_orient <- matrix(data=NA,nrow=3,ncol=length(V11D$orient))
+  delta_orient[1, ] <- (abs(V11D$orient - V11D$distractorori))
+  delta_orient[2, ] <- (abs((360 - (delta_orient[1, ] * 2)) / 2))
+  delta_orient[3, ] <- 360 - delta_orient[1, ]
+  delta_orient <- apply(delta_orient, 2, min)
+  
+  # Add minus signs back in
+  delta_orient[((V11D$orient - delta_orient) %% 360) == V11D$distractorori] <- -delta_orient[((V11D$orient - delta_orient) %% 360) == V11D$distractorori]
+  delta_orient[(((V11D$orient + 180) - delta_orient) %% 360) == V11D$distractorori] <- -delta_orient[(((V11D$orient + 180) - delta_orient) %% 360) == V11D$distractorori]
+    
+    dist_deltas <- delta_orient
+    sorted_delta <- cbind.data.frame(dist_deltas, acc = V11D$acc)
+    sorted_delta[sorted_delta$dist_deltas == -90, 1] <- 90  # turn -90º into 90º
+    #sorted_delta <- arrange(sorted_delta, dist_deltas)  # sort by
+V11D$deltaDT <- sorted_delta$dist_deltas
+
+# get circular mean error for 13 windows of 15 degrees of distractor-target (-89, 90)
+
+#library(pracma, include.only = c('deg2rad', 'rad2deg', 'repmat')) # include multiple functions
+win_size <- 13
+space1 <- (1:180)
+space2 <- (-89:90)
+mean_output_delta<- array(NA, dim = c(180,length(unique(V11D$subject))))
+for (n in 1:length(unique(V11D$subject))){
+  df<- cbind(DT = V11D$deltaDT[V11D$subject == unique(V11D$subject)[n]], acc = V11D$acc[V11D$subject == unique(V11D$subject)[n]])
+  sorted_delta <- df[order(df[,1],decreasing=FALSE),]
+for (dg in 1:180){
+        orients_to_include <- seq(dg - ((win_size - 1) / 2),dg + ((win_size - 1) / 2),1) 
+        orients_to_include <- (orients_to_include + 360) %% 180
+        orients_to_include[orients_to_include == 0] <- 180
+        orients_to_include_delta <- space2[space1 %in% orients_to_include]
+        smooth_runner_delta <- matrix(NA, ncol = 2)
+      for (num_orients in 1: length(orients_to_include_delta)){
+        smooth_runner_delta <- rbind(smooth_runner_delta, sorted_delta[sorted_delta[, 1] == orients_to_include_delta[num_orients], ])
+      } # end for num_orients
+        #smooth_runner_delta <- smooth_runner_delta[-1,]
+       mean_output_delta[dg, n] <- rad2deg(mean.circular(circular(deg2rad(smooth_runner_delta[,2])*2),  na.rm = TRUE))/2
+        } # end for dg 
+} # end for n
+
+  nboot <- 5000  # Number of bootstraps
+  resampleMEAN <- matrix(NA, nboot, 180)  # Preallocate space for results
+# Do bootstraps
+for (i in 1:nboot) {
+  ind <- sample(1:ncol(mean_output_delta), ncol(mean_output_delta), replace = TRUE)
+  resampleMEAN[i,] <- rowMeans(mean_output_delta[,ind] - matrix(colMeans(mean_output_delta[,ind]), nrow = 180, ncol = length(ind), byrow = TRUE))
+}
+  
+# Compute the percentile on this iteration
+CIs <- matrix(NA, ncol = 2, nrow = 180)
+for (i in 1:180){
+CIs[i,] <- quantile(resampleMEAN[,i], probs = c(0.025, 0.975))}
+CIs<- t(CIs)
+
+# Plot the confidence intervals
+ggplot(data.frame(x = -89:90, y1 = CIs[1, 1:180], y2 = CIs[2, 1:180])) +
+  geom_ribbon(aes(x = x, ymin = y1, ymax = y2), fill = rgb(0.3, 0.3, 0.3), alpha = 0.5) +
+  # Add the mean line
+  geom_line(
+    data = data.frame(
+      x = -89:90,
+      y = rowMeans(mean_output_delta[1:180, ] - rep(mean(mean_output_delta),180))
+    ), aes(x = x, y = y), color = rgb(0.3, 0.3, 0.3), size = 2) +
+  # Adjust the plot
+  scale_x_continuous(breaks = c(-90, -60, -30, 0, 30, 60, 90),
+                     limits = c(-90, 90)) +
+  # scale_y_continuous(limits = c(-20, 20),
+  #                    breaks = seq(-10, 10, by = 2)) + 
+  labs(x = "distractor-target (º)", y = "error (º)") +
+  theme_minimal() +
+  
+  # Add vertical line at x = 0
+  geom_vline(xintercept = 0, color = "black")
+ 
+```
+#DoG fitting
+```{r}
+# first try the simple way
+params<- array(NA, dim = c(3,length(unique(V11D$subject))))
+for (n in 1:length(unique(V11D$subject))){
+x <- wrap(V11D$deltaDT[V11D$subject == unique(V11D$subject)[n]])
+y <- derivative_gaussian(x, A = 1, mean = 0, sigma = 1) + rnorm(length(x), mean = 0, sd = 0.1)
+
+# Fit the derivative of a Gaussian function to the data
+fit <- nls(y ~ derivative_gaussian(x, A, mean, sigma), start = list(A = 1, mean = 0, sigma = 1))
+
+# Extract the parameters
+params[,n] <- coef(fit)
+}
+rowMeans(params)
+
+
+
+# create wrap functions
+wrap <- function(x) {
+  x[abs(x) > 90] <- x[abs(x) > 90] - 180 * sign(x[abs(x) > 90])
+  return(x)
+}
+wrap_rad <- function(x) {
+  x[abs(x) > pi] <- x[abs(x) > pi] - 2 * pi * sign(x[abs(x) > pi])
+  return(x)
+}
+
+k <- sqrt(2) / exp(-0.5)
+
+DoG <- function(p, x_min_deg) {
+  a <- p[1]
+  w <- p[2]
+  y <- x_min_deg * a * w * k * exp(-w * x_min_deg^2)
+  return(y)
+}
+
+GUESS_RATE <- .25
+min_fun_dog_percept <- function(p, vals, fit_sd, GUESS_RATE) {
+  resp <- vals[[1]]
+  d_probe <- vals[[2]]
+  x_min <- vals[[3]]
+  
+  crit <- DoG(p, x_min)
+  G <- dnorm(d_probe, crit, fit_sd)
+  p_cw <- pnorm(d_probe, crit, p[3])
+  
+  lik <- (p_cw * (resp == 1) + (resp == 0) * (1 - p_cw)) * (1 - GUESS_RATE) + 0.5 * GUESS_RATE
+  return(-sum(log(lik)))
+}
+
+min_fun_dog_percept_sd <- function(p, vals, GUESS_RATE) {
+  resp <- vals[[1]]
+  d_probe <- vals[[2]]
+  x_min <- vals[[3]]
+  
+  crit <- DoG(p[1:2], x_min)
+  G <- dnorm(d_probe, crit, p[3])
+  p_cw <- pnorm(d_probe, crit, p[3])
+  
+  lik <- (p_cw * (resp == 1) + (resp == 0) * (1 - p_cw)) * (1 - GUESS_RATE) + 0.5 * GUESS_RATE
+  return(-sum(log(lik)))
+}
+
+# x is delta_DT and y is mean
+# For each participant, we adjusted 3 parameters: A, w, and σ to maximize the likelihood of participant responses. We report the magnitude of our fits as well as the resulting FWHM estimated numerically.
+
+# DoG
+good_task <- (S$trial > 0) & !is.na(S$respCW) & abs(S$d_stim) < 15
+
+fit_DoG_subj <- function(subj, return_full = 0) {
+  this_S <- S[S$subj == subj & good_task, ]
+  n_trials <- nrow(this_S)
+  
+  if (n_trials > 100) { # 130
+    vals <- list(this_S$respCW, -this_S$d_stim, this_S$d_ori)
+    fit_dog_this <- optim(c(0, 0.03), min_fun_dog_percept, vals = vals, method = "Nelder-Mead")
+    
+    if (return_full) {
+      return(fit_dog_this)
+    }
+    
+    if (fit_dog_this$convergence == 0) {
+      return(fit_dog_this$par)
+    } else {
+      fit_dog_this <- optim(c(0, 0.03), min_fun_dog_percept, vals = vals, lower = c(-10, 0.0001), upper = c(10, 0.20))
+      return(fit_dog_this$par)
+    }
+  }
+}
+
+fit_DoG_subj_sd <- function(subj, return_full = 0) {
+  this_S <- S[S$subj == subj & good_task, ]
+  n_trials <- nrow(this_S)
+  
+  if (n_trials > 100) { # 130
+    vals <- list(this_S$respCW, -this_S$d_stim, this_S$d_ori)
+    fit_dog_this <- optim(c(0, 0.03, 7), min_fun_dog_percept_sd, vals = vals, method = "Nelder-Mead")
+    
+    if (return_full) {
+      return(fit_dog_this)
+    }
+    
+    if (fit_dog_this$convergence == 0) {
+      return(fit_dog_this$par)
+    } else {
+      fit_dog_this <- optim(c(0, 0.03, 7), min_fun_dog_percept_sd, vals = vals, lower = c(-10, 0.0001, 0.5), upper = c(10, 0.20, 20))
+      return(fit_dog_this$par)
+    }
+  }
+}
+
+get_FWHM <- function(fit_shape) {
+  # FWHM of fit DoG
+  n_samp <- nrow(fit_shape)
+  n_subj <- ncol(fit_shape)
+  hlf_amp <- apply(fit_shape, 2, max) / 2
+  d_hlf_min <- abs(fit_shape - hlf_amp)
+  hlf_inds <- apply(d_hlf_min, 2, order)
+  
+  n_try <- 10
+  FWHM <- rep(NA, n_subj)
+  
+  for (i in 1:n_subj) {
+    these_inds <- hlf_inds[, i]
+    ind0 <- these_inds[1]
+    ind1 <- these_inds[2]
+    
+    for (j in 1:n_try) {
+      if (abs(ind0 - ind1) < 10) {
+        ind1 <- these_inds[j + 2]
+      } else {
+        FWHM[i] <- abs(bns_tight[ind0] - bns_tight[ind1])
+      }
+    }
+  }
+  
+  return(FWHM)
+}
+
+
+```
+Look at bias separate high and low
+```{r}
+# Plot the confidence intervals for both
+ggplot(data.frame(x = -89:90)) +
+  geom_ribbon(aes(x = x, ymin = CIs_high[1, 1:180], ymax = CIs_high[2, 1:180]), fill = rgb(0.0, 0.1, 0.5), alpha = 0.5) +
+  # Add the mean line
+  geom_line(
+    data = data.frame(
+      x = -89:90,
+      y = rowMeans(mean_output_delta_high[1:180, ] - rep(mean(mean_output_delta_high),180))
+    ), aes(x = x, y = y, linetype = 'High'), color = rgb(0.0, 0.1, 0.5), size = 2) +
+  geom_ribbon(aes(x = x, ymin = CIs_low[1, 1:180], ymax = CIs_low[2, 1:180]), fill = rgb(0.5, 0.1, 0.1), alpha = 0.5) +
+  # Add the mean line
+  geom_line(
+    data = data.frame(
+      x = -89:90,
+      y = rowMeans(mean_output_delta_low[1:180, ] - rep(mean(mean_output_delta_low),180))
+    ), aes(x = x, y = y, linetype = 'Low'), color = rgb(0.5, 0.1, 0.1), size = 2) +
+  # Adjust the plot
+  scale_x_continuous(breaks = c(-90, -60, -30, 0, 30, 60, 90),
+                     limits = c(-90, 90)) +
+  # scale_y_continuous(limits = c(-20, 20),
+  #                    breaks = seq(-10, 10, by = 2)) + 
+  labs(x = "distractor-target (º)", y = "error (º)", linetype = "Noise") +
+  theme_minimal() +
+  
+  # Add vertical line at x = 0
+  geom_vline(xintercept = 0, color = "black")
+ 
+```
+# bin data moving average
+```{r}
+#3 bins of data: around cardinal (-15,15) and (75,90) (-75,90) , 1 negative oblique bin (-30,-60) (30,60), 1 positive oblique bin, bar graph for four conditions
+# circ stats
+V11D<- V11D %>% mutate(deltaDTbin = case_when(deltaDT %in% c(-15:15) ~ 'similar',
+                                              deltaDT %in% c(-90:-75, 75:90) ~ 'orthogonal',
+                                              deltaDT %in% c(-45:-15) ~ '- oblique', 
+                                              deltaDT %in% c(15:45) ~ '+ oblique' ,
+                                              .default = 'inbetween'))
+
+countbins <- V11D %>% group_by(subject, kappa, distractor) %>% count(deltaDTbin)
+mean_countbins<-countbins %>%
+  group_by(deltaDTbin) %>%
+  summarize(mean_n = mean(n))
+
+dfV11D.circstats = V11D %>%
+  group_by(subject, kappa, deltaDTbin) %>%
+  summarize(circ_mean = mean.circular(circular((acc*pi/180))),
+            circ_sd = sd.circular(circular((acc*pi/180))),
+            .groups = "keep") %>%
+  mutate(id = as.factor(subject))
+
+n_subj = n_distinct(dfV11D.circstats$subject)
+       
+dfV11D.circstats_plt = dfV11D.circstats %>%
+  group_by(kappa, deltaDTbin) %>%
+  summarize(mean_sd = mean(circ_sd),
+            sd_sd = sd(circ_sd),
+            se_sd = sd_sd/sqrt(n_subj),
+            .groups = "keep") %>%
+  ungroup()
+#plto
+cs = viridis(20)
+dfV11D.circstats_plt$mean_sd_deg <- (dfV11D.circstats_plt$mean_sd*(180/pi))
+dfV11D.circstats_plt$se_sd_deg <- (dfV11D.circstats_plt$se_sd*(180/pi))
+dfV11D.circstats_plt %>%
+  ggplot(aes(x=deltaDTbin, y=mean_sd_deg, fill=kappa)) + 
+  geom_bar(stat="identity", position=position_dodge2(preserve="single")) +
+  geom_errorbar(aes(ymin=mean_sd_deg-se_sd_deg, ymax=mean_sd_deg+se_sd_deg), width=.2,
+                 position=position_dodge(.9)) +
+  labs(x="distractor-target",y="Error (\u00B0)") +
+  #facet_wrap(~task)+
+  scale_fill_manual(name="Stimulus Noise", labels = c('High',"Low"),
+                    values = c(cs[13], cs[4])) +
+ scale_x_discrete(limits=c("orthogonal","- oblique", "similar", "+ oblique")) +
+  #annotate('text', label='V8', x=-Inf, y=Inf, hjust=0, vjust=1)+ # label version
+  theme(panel.grid.major.x = element_blank(), panel.background = element_blank(),
+        panel.grid = element_line(color = "gray"), text = element_text(size=15))
+
+
+```
+# collate data from all rectangle experiments
+upload and look for exclude
+```{r}
+# import data from V10
+V10 <- read_csv('/Users/hkular/Documents/Github/noisefx/Jellybean_V10/WM_noiseV10.csv')
+# clean it according to our criteria
+ntrials <- V10 %>% count(subject)
+V10$distractorori <- ifelse(V10$distractor == 1, NaN, V10$distractorori)
+V10$distractor <- factor(V10$distractor, levels = c(1,2,3), labels = c('none', 'ignore', 'attend'))
+V10$kappa <- factor(V10$kappa, levels = c(50, 5000), labels = c('high', 'low'))
+V10$change <- factor(V10$change, levels = c(10,-10), labels = c('ccw', 'cw')) 
+V10$dist <- factor(V10$dist, levels = c(114, 112, 117,115), labels = c('ccw', 'ccw', 'cw','cw'))
+
+attendrespcheck <- V10 %>% group_by(subject) %>% filter(distractor == 'attend') %>% count(dist)
+attendrespcheck <- attendrespcheck %>% filter(is.na(dist))
+for(i in 1:nrow(attendrespcheck)){if (attendrespcheck$n[i]>(.1*(ntrials$n[i])/3)) {
+  print(paste0('exclude subject ', attendrespcheck$subject[i], ' no response to attend'))
+}} # this criteria exclude 2,3,4,5,6,7,10,12,14,16,18,21,23,24,25, instead do 30% exclude 1,2,3,7,8,9,10,11,13,14,16
+
+# Responded to more than 10% of the distractors in the ignore-distractor condition
+ignorerespcheck <- V10 %>% group_by(subject) %>% filter(distractor == 'ignore') %>% count(dist)
+ignorerespcheck <- ignorerespcheck %>% filter(is.na(dist))
+for(i in 1:nrow(ignorerespcheck)){if (ignorerespcheck$n[i]<(.9*ntrials$n[i]/3)) {
+  print(paste0('exclude subject ', ignorerespcheck$subject[i], ' response to ignore'))
+}}# exclude 1 9 15
+  
+# Responded to at least 90% of the targets
+nonrespcheck <- V10 %>% group_by(subject) %>% count(resp)
+nonrespcheck <- nonrespcheck %>% filter(is.nan(resp))
+for(i in 1:nrow(nonrespcheck)){if (nonrespcheck$n[i] >(.1*ntrials$n[i])) {
+  print(paste0('exclude subject ', nonrespcheck$subject[i], ' no response to target'))
+  }}# exclude 9 11 15
+# task check
+ggplot(V10, aes(x = distractorori, y = resp)) +
+  geom_point() +
+  facet_wrap(~subject)+
+  # Set the x-axis labels and tick marks
+  scale_x_continuous(
+    breaks = c(0, 45, 90, 135, 180),
+    labels = c("0°", "45°", "90°", "135°", "180°"),
+    limits = c(0, 180)
+  ) +
+  # Set the y-axis labels and tick marks
+  scale_y_continuous(
+    breaks = c(20, 40, 60, 80, 100, 120, 140, 160),
+    labels = c("20°", "40°", "60°", "80°", "100°", "120°", "140°", "160°"),
+    limits = c(0, 180)
+  ) +
+  # Add x-axis and y-axis titles
+  labs(x = "Distractor (degrees)", y = "Response (degrees)") 
+# scatter plot distractor ori vs responded ori, exclude 11 
+  
+# The average measured performance error is greater than 49 degrees
+perfcheck = V10 %>% filter(!is.nan(resp))%>%
+  group_by(subject) %>%
+  summarize(circ_mean = mean.circular(circular((acc*pi/180))),
+            circ_sd = sd.circular(circular((acc*pi/180))),
+            .groups = "keep") %>%
+  mutate(id = as.factor(subject))
+for(i in 1:nrow(perfcheck)){if (perfcheck$circ_sd[i]*(180/pi) > 49) {
+  print(paste0('exclude subject ', perfcheck$subject[i], ' large behavior error'))
+  }} # exclude 1
+```
+combine data from old experiment
+```{r}
+# first is fail attend, second is fail 
+V10 <-V10 %>% filter(!subject == 1, !subject ==2, !subject ==3, !subject == 9, !subject ==11, !subject ==16, !subject ==8)
+
+# combined data
+# first separate subject nums, add +50 to all V10 subject nums
+V10$subject <- rep((1:length(unique(V10$subject)))+24, each = 288)
+V10 <- V10 %>% filter(!is.nan(resp))
+combo <- rbind(subset(V11, select = -c(2, 11:13)),V10)
+
+comboD<- combo %>% filter(distractor != 'none') %>% filter(!is.nan(acc)) %>% filter(kappa == 'high') #distractor =='attend' , !is.nan(acc)
+  delta_orient <- matrix(data=NA,nrow=3,ncol=length(comboD$orient))
+  delta_orient[1, ] <- (abs(comboD$orient - comboD$distractorori))
+  delta_orient[2, ] <- (abs((360 - (delta_orient[1, ] * 2)) / 2))
+  delta_orient[3, ] <- 360 - delta_orient[1, ]
+  delta_orient <- apply(delta_orient, 2, min)
+  
+  # Add minus signs back in
+  delta_orient[((comboD$orient - delta_orient) %% 360) == comboD$distractorori] <- -delta_orient[((comboD$orient - delta_orient) %% 360) == comboD$distractorori]
+  delta_orient[(((comboD$orient + 180) - delta_orient) %% 360) == comboD$distractorori] <- -delta_orient[(((comboD$orient + 180) - delta_orient) %% 360) == comboD$distractorori]
+    
+    dist_deltas <- delta_orient
+    sorted_delta <- cbind.data.frame(dist_deltas, acc = comboD$acc)
+    sorted_delta[sorted_delta$dist_deltas == -90, 1] <- 90  # turn -90º into 90º
+    #sorted_delta <- arrange(sorted_delta, dist_deltas)  # sort by
+comboD$deltaDT <- sorted_delta$dist_deltas
+
+# get circular mean error for 13 windows of 15 degrees of distractor-target (-89, 90)
+
+win_size <- 13
+space1 <- (1:180)
+space2 <- (-89:90)
+mean_output_delta<- array(NA, dim = c(180,length(unique(comboD$subject))))
+for (n in 1:length(unique(comboD$subject))){
+  df<- cbind(DT = comboD$deltaDT[comboD$subject == unique(comboD$subject)[n]], acc = comboD$acc[comboD$subject == unique(comboD$subject)[n]])
+  sorted_delta <- df[order(df[,1],decreasing=FALSE),] # this doesn't span space2 sometimes
+for (dg in 1:180){
+        orients_to_include <- seq(dg - ((win_size - 1) / 2),dg + ((win_size - 1) / 2),1) 
+        orients_to_include <- (orients_to_include + 360) %% 180
+        orients_to_include[orients_to_include == 0] <- 180
+        orients_to_include_delta <- space2[space1 %in% orients_to_include]
+        smooth_runner_delta <- matrix(NA, ncol = 2)
+      for (num_orients in 1: length(orients_to_include_delta)){
+        smooth_runner_delta <- rbind(smooth_runner_delta, sorted_delta[sorted_delta[, 1] == orients_to_include_delta[num_orients], ])
+      } # end for num_orients
+        skip_to_next <- FALSE
+        tryCatch(
+          {mean_output_delta[dg, n] <- (180/pi)*(mean.circular(circular((pi/180)*(smooth_runner_delta[,2])*2),  na.rm = TRUE))/2},
+          error = function(e) {message('Missing values for subject ', n, ' degree ', dg)
+            skip_to_next <<- TRUE
+            print(e)},
+          warning = function(w) {message('Missing values for subject ', n, ' degree ', dg)
+            print(w)})
+        if(skip_to_next) { next }     
+        } # end for dg 
+} # end for n
+
+# remove row with missing data from print(n) warning message?
+mean_output_delta<- subset(mean_output_delta, select = -c(32)) # (35,39 for low) (32 for high)
+
+  nboot <- 5000  # Number of bootstraps
+  resampleMEAN <- matrix(NA, nboot, 180)  # Preallocate space for results
+# Do bootstraps
+for (i in 1:nboot) {
+  ind <- sample(1:ncol(mean_output_delta), ncol(mean_output_delta), replace = TRUE)
+  resampleMEAN[i,] <- rowMeans(mean_output_delta[,ind] - matrix(colMeans(mean_output_delta[,ind]), nrow = 180, ncol = length(ind), byrow = TRUE))
+}
+  
+# Compute the percentile on this iteration
+CIs <- matrix(NA, ncol = 2, nrow = 180)
+for (i in 1:180){
+CIs[i,] <- quantile(resampleMEAN[,i], probs = c(0.025, 0.975), na.rm = T)}
+CIs<- t(CIs)
+
+
+rm(df, smooth_runner_delta, sorted_delta)
+# Plot the confidence intervals
+ggplot(data.frame(x = -89:90, y1 = CIs[1, 1:180], y2 = CIs[2, 1:180])) +
+  geom_ribbon(aes(x = x, ymin = y1, ymax = y2), fill = rgb(0.3, 0.3, 0.3), alpha = 0.5) +
+  # Add the mean line
+  geom_line(
+    data = data.frame(
+      x = -89:90,
+      y = rowMeans(mean_output_delta[1:180, ] - rep(mean(mean_output_delta),180))
+    ), aes(x = x, y = y), color = rgb(0.3, 0.3, 0.3), size = 2) +
+  # Adjust the plot
+  scale_x_continuous(breaks = c(-90, -60, -30, 0, 30, 60, 90),
+                     limits = c(-90, 90)) +
+  # scale_y_continuous(limits = c(-20, 20),
+  #                    breaks = seq(-10, 10, by = 2)) + 
+  labs(x = "distractor-target (º)", y = "error (º)") +
+  theme_minimal() +
+  
+  # Add vertical line at x = 0
+  geom_vline(xintercept = 0, color = "black")
+ 
+
+# split into attend vs ignore
+
+ggplot(data.frame(x = -89:90)) +
+  geom_ribbon(aes(x = x, ymin = CIs_cattend[1, 1:180], ymax = CIs_cattend[2, 1:180]), fill = rgb(0.0, 0.1, 0.5), alpha = 0.5) +
+  # Add the mean line
+  geom_line(
+    data = data.frame(
+      x = -89:90,
+      y = rowMeans(mean_output_delta_cattend[1:180, ] - rep(mean(mean_output_delta_cattend),180))
+    ), aes(x = x, y = y, linetype = 'Attend'), color = rgb(0.0, 0.1, 0.5), size = 2) +
+  geom_ribbon(aes(x = x, ymin = CIs_cignore[1, 1:180], ymax = CIs_cignore[2, 1:180]), fill = rgb(0.5, 0.1, 0.1), alpha = 0.5) +
+  # Add the mean line
+  geom_line(
+    data = data.frame(
+      x = -89:90,
+      y = rowMeans(mean_output_delta_cignore[1:180, ] - rep(mean(mean_output_delta_cignore),180))
+    ), aes(x = x, y = y, linetype = 'Ignore'), color = rgb(0.5, 0.1, 0.1), size = 2) +
+  # Adjust the plot
+  scale_x_continuous(breaks = c(-90, -60, -30, 0, 30, 60, 90),
+                     limits = c(-90, 90)) +
+  # scale_y_continuous(limits = c(-20, 20),
+  #                    breaks = seq(-10, 10, by = 2)) + 
+  labs(x = "distractor-target (º)", y = "error (º)", linetype = "Noise") +
+  theme_minimal() +
+  
+  # Add vertical line at x = 0
+  geom_vline(xintercept = 0, color = "black")
+
+
+# split into high vs low
+ggplot(data.frame(x = -89:90)) +
+  geom_ribbon(aes(x = x, ymin = CIs_chigh[1, 1:180], ymax = CIs_chigh[2, 1:180]), fill = rgb(0.0, 0.1, 0.5), alpha = 0.5) +
+  # Add the mean line
+  geom_line(
+    data = data.frame(
+      x = -89:90,
+      y = rowMeans(mean_output_delta_chigh[1:180, ] - rep(mean(mean_output_delta_chigh),180))
+    ), aes(x = x, y = y, linetype = 'High'), color = rgb(0.0, 0.1, 0.5), size = 2) +
+  geom_ribbon(aes(x = x, ymin = CIs_clow[1, 1:180], ymax = CIs_clow[2, 1:180]), fill = rgb(0.5, 0.1, 0.1), alpha = 0.5) +
+  # Add the mean line
+  geom_line(
+    data = data.frame(
+      x = -89:90,
+      y = rowMeans(mean_output_delta_clow[1:180, ] - rep(mean(mean_output_delta_clow),180))
+    ), aes(x = x, y = y, linetype = 'Low'), color = rgb(0.5, 0.1, 0.1), size = 2) +
+  # Adjust the plot
+  scale_x_continuous(breaks = c(-90, -60, -30, 0, 30, 60, 90),
+                     limits = c(-90, 90)) +
+ # Match linetype with colors
+  labs(x = "distractor-target (º)", y = "error (º)", linetype = 'Noise') +
+  theme_minimal() +
+  
+  # Add vertical line at x = 0
+  geom_vline(xintercept = 0, color = "black")
+
+```
+# combine data from better bad subjects
+```{r}
+
+rm(df, smooth_runner_delta, sorted_delta)
+
+# which ones are better? dist_accb count/total >.7
+dist_accb$subject[dist_accb$count/dist_accb$total>.7]
+V11b<-V11b %>% filter(subject == 4 | subject == 8 | subject == 22 | subject ==24 | subject == 81)
+# renumber subjects
+V11b$subject <- rep((1:length(unique(V11b$subject)))+24, each = 576)
+V11b <- V11b %>% filter(!is.nan(resp))
+
+V11c<- rbind(subset(V11, select = -c(14)), V11b)
+ # signed responses at each target-distractor difference:
+V11D<- V11c %>% filter(distractor != "none") %>% filter(!is.nan(acc)) %>% filter(!is.nan(distractorori)) %>% filter(kappa == 'low')
+  delta_orient <- matrix(data=NA,nrow=3,ncol=length(V11D$orient))
+  delta_orient[1, ] <- (abs(V11D$orient - V11D$distractorori))
+  delta_orient[2, ] <- (abs((360 - (delta_orient[1, ] * 2)) / 2))
+  delta_orient[3, ] <- 360 - delta_orient[1, ]
+  delta_orient <- apply(delta_orient, 2, min)
+  
+  # Add minus signs back in
+  delta_orient[((V11D$orient - delta_orient) %% 360) == V11D$distractorori] <- -delta_orient[((V11D$orient - delta_orient) %% 360) == V11D$distractorori]
+  delta_orient[(((V11D$orient + 180) - delta_orient) %% 360) == V11D$distractorori] <- -delta_orient[(((V11D$orient + 180) - delta_orient) %% 360) == V11D$distractorori]
+    
+    dist_deltas <- delta_orient
+    sorted_delta <- cbind.data.frame(dist_deltas, acc = V11D$acc)
+    sorted_delta[sorted_delta$dist_deltas == -90, 1] <- 90  # turn -90º into 90º
+    #sorted_delta <- arrange(sorted_delta, dist_deltas)  # sort by
+V11D$deltaDT <- sorted_delta$dist_deltas
+
+# These data were normalized by first subtracting out individual-subject means, and the resultant within-subject
+# average is depicted by the white lines. Black error areas represent bootstrapped 95% confidence intervals on the within-subject data
+# (across all possible target-distractor differences). The single data points presented on the far right of each subplot are from the 10% of
+# trials where no distractor was shown during the delay. 
+
+# get circular mean error for 13 windows of 15 degrees of distractor-target (-89, 90)
+
+mean_output_delta<- array(NA, dim = c(180,length(unique(V11D$subject))))
+for (n in 1:length(unique(V11D$subject))){
+  df<- cbind(DT = V11D$deltaDT[V11D$subject == unique(V11D$subject)[n]], acc = V11D$acc[V11D$subject == unique(V11D$subject)[n]])
+  sorted_delta <- df[order(df[,1],decreasing=FALSE),]
+for (dg in 1:180){
+        orients_to_include <- seq(dg - ((win_size - 1) / 2),dg + ((win_size - 1) / 2),1) 
+        orients_to_include <- (orients_to_include + 360) %% 180
+        orients_to_include[orients_to_include == 0] <- 180
+        orients_to_include_delta <- space2[space1 %in% orients_to_include]
+        smooth_runner_delta <- matrix(NA, ncol = 2)
+      for (num_orients in 1: length(orients_to_include_delta)){
+        smooth_runner_delta <- rbind(smooth_runner_delta, sorted_delta[sorted_delta[, 1] == orients_to_include_delta[num_orients], ])
+      } # end for num_orients
+        #smooth_runner_delta <- smooth_runner_delta[-1,]
+       mean_output_delta[dg, n] <- rad2deg(mean.circular(circular(deg2rad(smooth_runner_delta[,2])*2),  na.rm = TRUE))/2
+        } # end for dg 
+} # end for n
+
+  nboot <- 5000  # Number of bootstraps
+  resampleMEAN <- matrix(NA, nboot, 180)  # Preallocate space for results
+# Do bootstraps
+for (i in 1:nboot) {
+  ind <- sample(1:ncol(mean_output_delta), ncol(mean_output_delta), replace = TRUE)
+  resampleMEAN[i,] <- rowMeans(mean_output_delta[,ind] - matrix(colMeans(mean_output_delta[,ind]), nrow = 180, ncol = length(ind), byrow = TRUE))
+}
+  
+# Compute the percentile on this iteration
+CIs <- matrix(NA, ncol = 2, nrow = 180)
+for (i in 1:180){
+CIs[i,] <- quantile(resampleMEAN[,i], probs = c(0.025, 0.975))}
+CIs<- t(CIs)
+
+# split into high vs low
+ggplot(data.frame(x = -89:90)) +
+  geom_ribbon(aes(x = x, ymin = CIs_chigh[1, 1:180], ymax = CIs_chigh[2, 1:180]), fill = rgb(0.0, 0.1, 0.5), alpha = 0.5) +
+  # Add the mean line
+  geom_line(
+    data = data.frame(
+      x = -89:90,
+      y = rowMeans(mean_output_delta_chigh[1:180, ] - rep(mean(mean_output_delta_chigh),180))
+    ), aes(x = x, y = y, linetype = 'High'), color = rgb(0.0, 0.1, 0.5), size = 2) +
+  geom_ribbon(aes(x = x, ymin = CIs_clow[1, 1:180], ymax = CIs_clow[2, 1:180]), fill = rgb(0.5, 0.1, 0.1), alpha = 0.5) +
+  # Add the mean line
+  geom_line(
+    data = data.frame(
+      x = -89:90,
+      y = rowMeans(mean_output_delta_clow[1:180, ] - rep(mean(mean_output_delta_clow),180))
+    ), aes(x = x, y = y, linetype = 'Low'), color = rgb(0.5, 0.1, 0.1), size = 2) +
+  # Adjust the plot
+  scale_x_continuous(breaks = c(-90, -60, -30, 0, 30, 60, 90),
+                     limits = c(-90, 90)) +
+ # Match linetype with colors
+  labs(x = "distractor-target (º)", y = "error (º)", linetype = 'Noise') +
+  theme_minimal() +
+  
+  # Add vertical line at x = 0
+  geom_vline(xintercept = 0, color = "black")
+
+```
+graveyard below
+``` {r}
+### GRAVEYARD
+
+
+  # similar to supplement fig 9
+  # norm circ mean y vs delta distractor - target x
+#   V11D<- V11 %>% filter(distractor != "none")
+#   delta_orient <- matrix(data=NA,nrow=3,ncol=length(V11D$orient))
+#   delta_orient[1, ] <- (abs(V11D$orient - V11D$distractorori))
+#   delta_orient[2, ] <- (abs((360 - (delta_orient[1, ] * 2)) / 2))
+#   delta_orient[3, ] <- 360 - delta_orient[1, ]
+#   delta_orient <- apply(delta_orient, 2, min)
+#   
+#   # Add minus signs back in
+#   delta_orient[((V11D$orient - delta_orient) %% 360) == V11D$distractorori] <- -delta_orient[((V11D$orient - delta_orient) %% 360) == V11D$distractorori]
+#   delta_orient[(((V11D$orient + 180) - delta_orient) %% 360) == V11D$distractorori] <- -delta_orient[(((V11D$orient + 180) - delta_orient) %% 360) == V11D$distractorori]
+# 
+# win_size <- 13
+# # Loop through subjects
+# mean_output <- array(NA, dim = c(180, n_subj, 6))
+# mean_output_delta<- array(NA, dim = c(180,n_subj))
+# for (n in 1:(n_subj)) {
+#     # signed responses at each target orientation (in each condition, there's 6 conditions):
+#     df <- V11 %>% filter(subject == n)
+#     sorted_mu_tmp <- cbind(ori = df$orient, acc = df$acc, kappa = df$kappa, dist = df$distractor)
+#     sorted_mu_tmp <- sorted_mu_tmp[order(sorted_mu_tmp[,1],decreasing=FALSE),]
+#     sorted_mu <- array(NA, dim = c(nrow(sorted_mu_tmp)/6,2,6)) # ERR
+#     # kappa 1 = low, 2 = high. distractor 1 = none , 2 = present, 3= change
+#     sorted_mu[,,1] <- sorted_mu_tmp[sorted_mu_tmp[,"kappa"]==1 & sorted_mu_tmp[,"dist"]==1,1:2] 
+#     sorted_mu[,,2] <- sorted_mu_tmp[sorted_mu_tmp[,"kappa"]==2 & sorted_mu_tmp[,"dist"]==1,1:2]
+#     sorted_mu[,,3] <- sorted_mu_tmp[sorted_mu_tmp[,"kappa"]==1 & sorted_mu_tmp[,"dist"]==2,1:2]
+#     sorted_mu[,,4] <- sorted_mu_tmp[sorted_mu_tmp[,"kappa"]==2 & sorted_mu_tmp[,"dist"]==2,1:2]
+#     sorted_mu[,,5] <- sorted_mu_tmp[sorted_mu_tmp[,"kappa"]==1 & sorted_mu_tmp[,"dist"]==3,1:2]
+#     sorted_mu[,,6] <- sorted_mu_tmp[sorted_mu_tmp[,"kappa"]==2 & sorted_mu_tmp[,"dist"]==3,1:2]
+#     space1 <- 1:180  # responses over a target space from 1:180 deg
+#     
+#   # signed responses at each target-distractor difference:
+#   V11D<- V11 %>% filter(distractor != "none" & subject == n & !is.nan(acc) & !is.nan(distractorori))
+#   delta_orient <- matrix(data=NA,nrow=3,ncol=length(V11D$orient))
+#   delta_orient[1, ] <- (abs(V11D$orient - V11D$distractorori))
+#   delta_orient[2, ] <- (abs((360 - (delta_orient[1, ] * 2)) / 2))
+#   delta_orient[3, ] <- 360 - delta_orient[1, ]
+#   delta_orient <- apply(delta_orient, 2, min)
+#   
+#   # Add minus signs back in
+#   delta_orient[((V11D$orient - delta_orient) %% 360) == V11D$distractorori] <- -delta_orient[((V11D$orient - delta_orient) %% 360) == V11D$distractorori]
+#   delta_orient[(((V11D$orient + 180) - delta_orient) %% 360) == V11D$distractorori] <- -delta_orient[(((V11D$orient + 180) - delta_orient) %% 360) == V11D$distractorori]
+#     
+#     dist_deltas <- delta_orient
+#     sorted_delta <- cbind.data.frame(dist_deltas, acc = V11D$acc)
+#     sorted_delta[sorted_delta$acc == -90, 1] <- 90  # turn -90º into 90º
+#     sorted_delta <- arrange(sorted_delta, dist_deltas)  # sort by target-distractor difference
+#     space2 <- -89:90  # responses over a difference space from -89:90
+#     
+#     for (dg in 1:180) {
+#         # choose my orientations based on the window size
+#         orients_to_include <- seq(dg - ((win_size - 1) / 2),dg + ((win_size - 1) / 2),1) 
+#         orients_to_include <- (orients_to_include + 360) %% 180
+#         orients_to_include[orients_to_include == 0] <- 180
+#         orients_to_include_delta <- space2[space1 %in% orients_to_include]
+#         
+#         # collect the data from within this window
+#         for (cond in 1:6) {   
+#           smooth_runner <- matrix(NA, ncol = 2)
+#             for (num_orients in 1:length(orients_to_include)) { 
+#                 smooth_runner <- rbind(smooth_runner, sorted_mu[sorted_mu[, 1, cond] == orients_to_include[num_orients], , cond])
+#             }
+#             # determine circular mean
+#            mean_output[dg, n, cond] <- ((180/pi)*(mean.circular(circular((pi/180)*(smooth_runner[, 2] * 2)), na.rm = TRUE))) / 2
+#         }# end for cond
+#         
+#         smooth_runner_delta <- matrix(NA, ncol = 2)
+#         colnames(smooth_runner_delta) <- c('dist_deltas', 'acc')
+#         for (num_orients in 1:length(orients_to_include_delta)) {
+#           smooth_runner_delta <- rbind(smooth_runner_delta, sorted_delta[sorted_delta[, 1] == orients_to_include_delta[num_orients], ])
+#         }
+#         # determine circular mean
+#         mean_output_delta[dg, n] <- (180/pi)*(mean.circular(circular((pi/180)*(smooth_runner_delta[, 2] * 2)), na.rm = TRUE)) / 2
+#     } # end for dg
+# } # end for n
+#     
+# # just for now
+# mean_output_deltaclean <- mean_output_delta[,-c(11,16,17)]
+# 
+#   nboot <- 1000  # Number of bootstraps
+#   resampleMEAN <- matrix(NA, nboot, 180)  # Preallocate space for results
+# # Do bootstraps
+# for (i in 1:nboot) {
+#   ind <- sample(1:ncol(mean_output_deltaclean), ncol(mean_output_deltaclean), replace = TRUE)
+#   resampleMEAN[i,] <- rowMeans(mean_output_deltaclean[,ind] - matrix(colMeans(mean_output_deltaclean[,ind]), nrow = 180, ncol = length(ind), byrow = TRUE))
+# }
+#   
+#  # Compute the percentile on this iteration
+# CIs <- matrix(NA, ncol = 2, nrow = 180)
+# for (i in 1:180){
+# CIs[i,] <- quantile(resampleMEAN[,i], probs = c(0.025, 0.975))}
+# 
+# # Create data frame for ggplot
+# plot_data <- data.frame(
+#   x = rep(-89:90, each = 2),
+#   y = c((CIs[1:180,]))
+# )
+# 
+# # Create the ggplot
+# gg <- ggplot() +
+#   geom_line(data = plot_data, aes(x = x, y = y), color = rgb(0.3, 0.3, 0.3)) +
+#   geom_line(
+#     data = data.frame(
+#       x = -89:90,
+#       y = rowMeans(mean_output_deltaclean[1:180, ] - rep(mean(mean_output_deltaclean),180))
+#     ),
+#     aes(x = x, y = y),
+#     color = rgb(0.3, 0.3, 0.3),
+#     linewidth = 2
+#   ) +
+#   scale_x_continuous(
+#     breaks = c(-90, -60, -30, 0, 30, 60, 90),
+#     limits = c(-90, 90),
+#     expand = c(0.05, 0)
+#   ) +
+#   scale_y_continuous(
+#     limits = c(-10, 10),
+#     breaks = seq(-10, 10, by = 2),
+#     expand = c(0.05, 0)
+#   ) +
+#   labs(x = "distractor-target (º)", y = "error (º)") +
+#   theme_minimal() +
+#   geom_vline(xintercept = 0, color = "black")
+# 
+# gg
+
+  ## end RR code
+
+#   dfV11d.circstats = V11D %>%
+#   group_by(subject, deltaDT) %>%
+#   summarize(circ_mean = mean.circular(circular((acc*pi/180))),
+#             circ_sd = sd.circular(circular((acc*pi/180))),
+#             .groups = "keep") %>%
+#   mutate(id = as.factor(subject))
+# 
+# n_subj = n_distinct(dfV11d.circstats$subject)
+#        
+# dfV11d.circstats_plt = dfV11d.circstats %>%
+#   group_by(deltaDT) %>%
+#   summarize(mean_sd = mean(circ_sd),
+#             sd_sd = sd(circ_sd),
+#             se_sd = sd_sd/sqrt(n_subj),
+#             .groups = "keep") %>%
+#   ungroup()
+# 
+#   dfV11d.circstats_plt$mean_sd_deg <- (dfV11d.circstats_plt$mean_sd*(180/pi))
+#   dfV11d.circstats_plt$se_sd_deg <- (dfV11d.circstats_plt$se_sd*(180/pi))
+
+  # dfV11d.circstats_plt%>%
+  # ggplot(aes(x = deltaDT, y = mean_sd)) +
+  # geom_line() +
+  # # Set the x-axis labels and tick marks
+  # scale_x_continuous(
+  #   breaks = c(-90, -45, 0 , 45 ,90),
+  #   labels = c("-90°", "-45°", "0°", "45°", "90°"),
+  #   limits = c(-90,90)
+  # ) +
+  # # Add x-axis and y-axis titles
+  # labs(y = "circular mean (degrees)", x = "Distractor-Target (degrees)", color = 'Noise condition') +
+  # # Add a color scale legend
+  # scale_color_manual(values = c(cs[13], cs[8],cs[4])) +
+  # # Add a size scale legend
+  # scale_size(range = c(2, 8))
+#   
+```
