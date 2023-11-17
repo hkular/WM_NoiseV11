@@ -413,7 +413,7 @@ plotcard
 ## now try my own version of showing the distractor bias on the target, averaged across subjects
 
  # signed responses at each target-distractor difference:
-V11D<- V11 %>% filter(distractor != "none") %>% filter(!is.nan(acc)) %>% filter(!is.nan(distractorori)) %>% filter(kappa == 'high')
+V11D<- V11 %>% filter(distractor != "none") %>% filter(!is.nan(acc)) %>% filter(!is.nan(distractorori)) #%>% filter(kappa == 'high')
   delta_orient <- matrix(data=NA,nrow=3,ncol=length(V11D$orient))
   delta_orient[1, ] <- (abs(V11D$orient - V11D$distractorori))
   delta_orient[2, ] <- (abs((360 - (delta_orient[1, ] * 2)) / 2))
@@ -437,7 +437,7 @@ V11D$deltaDT <- sorted_delta$dist_deltas
 
 # get circular mean error for 13 windows of 15 degrees of distractor-target (-89, 90)
 
-library(pracma, include.only = c('deg2rad', 'rad2deg')) # include multiple functions
+#library(pracma, include.only = c('deg2rad', 'rad2deg')) # include multiple functions
 win_size <- 13
 space1 <- (1:180)
 space2 <- (-89:90)
@@ -614,147 +614,180 @@ ggplot(data.frame(x = -89:90, y1 = CIs[1, 1:180], y2 = CIs[2, 1:180])) +
   geom_vline(xintercept = 0, color = "black")
  
 ```
-#DoG fitting
+# can we drop none trials in next expt?
 ```{r}
-# first try the simple way
-params<- array(NA, dim = c(3,length(unique(V11D$subject))))
-for (n in 1:length(unique(V11D$subject))){
-x <- wrap(V11D$deltaDT[V11D$subject == unique(V11D$subject)[n]])
-y <- derivative_gaussian(x, A = 1, mean = 0, sigma = 1) + rnorm(length(x), mean = 0, sd = 0.1)
+# two way anova look for interaction
+# none vs ignore
+tmp <- dfV11.circstats %>% filter(distractor != 'attend')
+(nonevsignore <- anovaBF(circ_sd ~ kappa + distractor + kappa:distractor + id,
+data = tmp, whichRandom = "id", whichModels = 'all') )# Bayesian mixed effects ANOVA
 
-# Fit the derivative of a Gaussian function to the data
-fit <- nls(y ~ derivative_gaussian(x, A, mean, sigma), start = list(A = 1, mean = 0, sigma = 1))
+# none vs attend
+tmp <- dfV11.circstats %>% filter(distractor != 'ignore')
+(nonevsattend<- anovaBF(circ_sd ~ kappa + distractor + kappa:distractor + id,
+data = tmp, whichRandom = "id", whichModels = 'all') )# Bayesian mixed effects ANOVA
 
-# Extract the parameters
-params[,n] <- coef(fit)
-}
-rowMeans(params)
+# yes we can drop none only main effect
 
-
-
-# create wrap functions
+```
+#DoG fitting method 1 Tobias J dog.m function - fail
+```{r}
+# create wrap function
 wrap <- function(x) {
   x[abs(x) > 90] <- x[abs(x) > 90] - 180 * sign(x[abs(x) > 90])
   return(x)
 }
-wrap_rad <- function(x) {
-  x[abs(x) > pi] <- x[abs(x) > pi] - 2 * pi * sign(x[abs(x) > pi])
-  return(x)
+#-------------------------------------------------------------------------------
+# DOG: Fit first derivative of Gaussian using optim
+dog <- function(x, y) {
+  Fn <- function(x, sigma) (1 / sqrt(2 * pi * sigma^2)) * exp(-(x^2) / (2 * sigma^2))
+  
+  Fnn <- function(pr) sum((Fn(x, pr[2]) * x * pr[1] - y)^2)
+  
+  opt <- optim(c(0, 1), Fnn, method = "L-BFGS-B", lower = c(-Inf, 0 + .Machine$double.eps))
+  
+  alpha <- opt$par[1]
+  sigma <- opt$par[2]
+  
+  xi <- seq(-sigma * 3, sigma * 3, length.out = 1e5)
+  amp <- max(Fn(xi, sigma) * xi * alpha)
+  
+  return(c(alpha, sigma, amp))
 }
 
-k <- sqrt(2) / exp(-0.5)
-
-DoG <- function(p, x_min_deg) {
-  a <- p[1]
-  w <- p[2]
-  y <- x_min_deg * a * w * k * exp(-w * x_min_deg^2)
-  return(y)
-}
-
-GUESS_RATE <- .25
-min_fun_dog_percept <- function(p, vals, fit_sd, GUESS_RATE) {
-  resp <- vals[[1]]
-  d_probe <- vals[[2]]
-  x_min <- vals[[3]]
+conditions <- c('attend', 'ignore')
+fit <- array(NA,dim = c(3,length(unique(V11D$subject)), length(conditions)))
+for (n in 1:length(unique(V11D$subject))){
+  for (cond in 1:length(conditions)){
+  x <- wrap(V11D$deltaDT[V11D$subject == unique(V11D$subject)[n] & V11D$distractor == conditions[cond]])
+  y <- wrap(V11D$acc[V11D$subject == unique(V11D$subject)[n] & V11D$distractor == conditions[cond]])
   
-  crit <- DoG(p, x_min)
-  G <- dnorm(d_probe, crit, fit_sd)
-  p_cw <- pnorm(d_probe, crit, p[3])
-  
-  lik <- (p_cw * (resp == 1) + (resp == 0) * (1 - p_cw)) * (1 - GUESS_RATE) + 0.5 * GUESS_RATE
-  return(-sum(log(lik)))
-}
-
-min_fun_dog_percept_sd <- function(p, vals, GUESS_RATE) {
-  resp <- vals[[1]]
-  d_probe <- vals[[2]]
-  x_min <- vals[[3]]
-  
-  crit <- DoG(p[1:2], x_min)
-  G <- dnorm(d_probe, crit, p[3])
-  p_cw <- pnorm(d_probe, crit, p[3])
-  
-  lik <- (p_cw * (resp == 1) + (resp == 0) * (1 - p_cw)) * (1 - GUESS_RATE) + 0.5 * GUESS_RATE
-  return(-sum(log(lik)))
-}
-
-# x is delta_DT and y is mean
-# For each participant, we adjusted 3 parameters: A, w, and σ to maximize the likelihood of participant responses. We report the magnitude of our fits as well as the resulting FWHM estimated numerically.
-
-# DoG
-good_task <- (S$trial > 0) & !is.na(S$respCW) & abs(S$d_stim) < 15
-
-fit_DoG_subj <- function(subj, return_full = 0) {
-  this_S <- S[S$subj == subj & good_task, ]
-  n_trials <- nrow(this_S)
-  
-  if (n_trials > 100) { # 130
-    vals <- list(this_S$respCW, -this_S$d_stim, this_S$d_ori)
-    fit_dog_this <- optim(c(0, 0.03), min_fun_dog_percept, vals = vals, method = "Nelder-Mead")
-    
-    if (return_full) {
-      return(fit_dog_this)
-    }
-    
-    if (fit_dog_this$convergence == 0) {
-      return(fit_dog_this$par)
-    } else {
-      fit_dog_this <- optim(c(0, 0.03), min_fun_dog_percept, vals = vals, lower = c(-10, 0.0001), upper = c(10, 0.20))
-      return(fit_dog_this$par)
-    }
+# Fit the derivative of a Gaussian function to the data
+  fit[,n,cond] <- dog(x,y)
   }
 }
+#-------------------------------------------------------------------------------
+# now do BF stats to test amplitude of bias is different between conditions
 
-fit_DoG_subj_sd <- function(subj, return_full = 0) {
-  this_S <- S[S$subj == subj & good_task, ]
-  n_trials <- nrow(this_S)
-  
-  if (n_trials > 100) { # 130
-    vals <- list(this_S$respCW, -this_S$d_stim, this_S$d_ori)
-    fit_dog_this <- optim(c(0, 0.03, 7), min_fun_dog_percept_sd, vals = vals, method = "Nelder-Mead")
-    
-    if (return_full) {
-      return(fit_dog_this)
-    }
-    
-    if (fit_dog_this$convergence == 0) {
-      return(fit_dog_this$par)
-    } else {
-      fit_dog_this <- optim(c(0, 0.03, 7), min_fun_dog_percept_sd, vals = vals, lower = c(-10, 0.0001, 0.5), upper = c(10, 0.20, 20))
-      return(fit_dog_this$par)
-    }
+(kappa_bias_BFttest <- ttestBF(x = fit[3,,1], y = fit[3,,2], var.eq = T)) # not different between high and low BF = 0.39
+
+
+(distractor_bias_BFttest <- ttestBF(x = fit[3,,1], y = fit[3,,2], var.eq = T)) # not different between attend and ignore BF = 0.68
+
+
+# Step 1: make pure dog and put through my optim and see that we calculate correct parameters
+## error = x * amp * w * sqrt(2)/e^-.5 * e^-(w*x)^2
+puredog <- function(a, w, x) {
+  c<- sqrt(2) / exp(-.5)
+  y <- x * a * w * c * exp(-w * x^2)
+  plotdog <- plot(x, y, type = "l", col = "blue", lwd = 2, xlab = "x", ylab = "y", main = "DoG Function")
+  return(c(data.frame(x=x,y=y), plotdog))
+}
+df<-puredog(30,0.01,seq(-90,90))
+
+dog(df$x, df$y)
+# alpha, sigma, amp, this did not work
+
+# Step 2: make pure dog with tiny noise and put through optim and see that we recover correct parameters
+# Step 3: make clean fake data and multiply params by 2 sd to create error boundaries
+# Step 4: treat data as one big subject. resample with replacement and bootstrap to get avg and 95% CI on params
+# for i 1:24 subj pull 1 many times
+
+```
+# DoG fitting method 2 gpt
+```{r}
+# Step 0 define the function we will use to do the DoG fits
+DoG_fit <- function(x,y, plots = FALSE){ #lowBound = c(-Inf, 0 + .Machine$double.eps), upBound = c(Inf,Inf)
+  # Define the first derivative of a Gaussian model
+  gaussian_derivative <- function(p, x) {
+    w <- p[1]
+    amp <- p[2]
+    k<- sqrt(2) / exp(-.5)
+    y_model <- x * amp * w * k * exp(-w * x^2)
+    return(y_model)
   }
+  # Define the objective function to minimize (residual sum of squares)
+  # objective_function <- function(p, x, y) {
+  #   tryCatch(
+  #     {
+  #       y_model <- gaussian_derivative(p, x)
+  #       if (any(!is.finite(y_model))) {
+  #         warning("Non-finite value detected. Constraining to a valid range.")
+  #         y_model <- max(min(y_model, 1e100), -1e100)
+  #       }
+  #       #return(y_model)
+  #       return(sum((y - y_model)^2))
+  #     }
+  #   )
+  # }
+  objective_function <- function(p, x, y) {
+    y_model <- gaussian_derivative(p, x)
+    return(sum((y - y_model)^2))
+  }
+  # Initial parameter values
+  initial_params <- c(sigma = 0.0009, amp = 50)
+  # Use optim to fit the model to the data
+  # fit_result <- optim(par = initial_params, fn = objective_function, x = x, y = y, method = "L-BFGS-B", lower = lowBound, upper = upBound)
+  fit_result <- optim(par = initial_params, fn = objective_function, x = x, y = y, method = "Nelder-Mead")
+  # Extract the fitted parameters
+  fitted_params <- fit_result$par
+  # Generate the fitted curve
+  y_fit <- gaussian_derivative(fitted_params, x)
+  # Plot the original data and the fitted curve
+  if (plots) {
+  plot(x, y, type = "l", col = "blue", lwd = 2, xlab = "x", ylab = "y", main = "Fitted Gaussian Derivative")
+  lines(x, y_fit, col = "red", lwd = 2, lty = 2)
+  legend("topright", legend = c("Data", "Fitted Curve"), col = c("blue", "red"), lty = 1:2, lwd = 2)
+  }
+  return(c(fitted_params))
 }
 
-get_FWHM <- function(fit_shape) {
-  # FWHM of fit DoG
-  n_samp <- nrow(fit_shape)
-  n_subj <- ncol(fit_shape)
-  hlf_amp <- apply(fit_shape, 2, max) / 2
-  d_hlf_min <- abs(fit_shape - hlf_amp)
-  hlf_inds <- apply(d_hlf_min, 2, order)
-  
-  n_try <- 10
-  FWHM <- rep(NA, n_subj)
-  
-  for (i in 1:n_subj) {
-    these_inds <- hlf_inds[, i]
-    ind0 <- these_inds[1]
-    ind1 <- these_inds[2]
-    
-    for (j in 1:n_try) {
-      if (abs(ind0 - ind1) < 10) {
-        ind1 <- these_inds[j + 2]
-      } else {
-        FWHM[i] <- abs(bns_tight[ind0] - bns_tight[ind1])
-      }
-    }
-  }
-  
-  return(FWHM)
+# Step 1: make pure dog and put through my optim and see that we calculate correct parameters
+## error = x * amp * w * sqrt(2)/e^-.5 * e^-(w*x)^2
+puredog <- function(w,a, x, noise) {
+  k<- sqrt(2) / exp(-.5)
+  y <- x * a * w * k * exp(-w * x^2) + rnorm(length(x), mean = 0, sd = noise)
+  plotdog <- plot(x, y, type = "l", col = "blue", lwd = 2, xlab = "x", ylab = "y", main = "DoG Function")
+  return(c(data.frame(x=x,y=y), plotdog))
 }
+df<-puredog(0.01,3,seq(-90,90), 0)
+
+DoG_fit(df$x, df$y) # works with pure DoG data yay!
+
+# Step 2: make pure dog with tiny noise and put through optim and see that we recover correct parameters
+df<-puredog(0.01, 13, seq(-90,90), 0.1) # tested noise = .1, .05, .01
+
+DoG_fit(df$x, df$y) # works with noise
+
+# Step 3: make clean fake data and multiply params by 2 to create error boundaries
+## clean fake data will just be smoothed real data - we'll use LOESS
+messy_data<- data.frame(x = (-89:90), y = rowMeans(mean_output_delta[1:180, ] - rep(mean(mean_output_delta),180)))
+loess_try<- loess( y ~ x, data = messy_data, span = 0.5)
+smooth50 <- predict(loess_try)
+plot(messy_data$x, messy_data$y, main = "Loess Models")
+lines(smooth50, x = messy_data$x, col = 'red')
+fake_data <- data.frame(x = messy_data$x, y = smooth50)
+params_bounds<- c(10*DoG_fit(fake_data$x, fake_data$y, TRUE), -10*DoG_fit(fake_data$x, fake_data$y)) # found bounds using nelder-mead, then apply using L-BFGS-B as initial param??
 
 
+# Step 4: treat data as one big subject. bootstrap and resample with replacement 
+nboot <- 5000  # Number of bootstraps
+resampleParams <- matrix(NA, nboot, 2)  # Preallocate space for results
+# Do bootstraps
+for (i in 1:nboot) {
+  n <- sample(1:length(unique(V11D$subject)), 1, replace = TRUE)
+  df<- data.frame(DT = V11D$deltaDT[V11D$subject == unique(V11D$subject)[n]], acc =    V11D$acc[V11D$subject == unique(V11D$subject)[n]])
+  resampleParams[i,] <- DoG_fit(df$DT, df$acc, FALSE)
+} # [i,1] = sigma [i,2] = amp
+# Step 5: get avg and 95% CI on params
+colnames(resampleParams) <- c("sigma", "amp")
+colMeans(resampleParams)
+t.test(resampleParams[,2])$conf.int
+t.test(resampleParams[,1])$conf.int
+
+# Step 6: BF t-test params for 
+# high vs. low
+# attend vs. ignore
 ```
 Look at bias separate high and low
 ```{r}
