@@ -168,8 +168,7 @@ ggplot(nan_count_g, aes(x = block, y = count)) +
   ) +
   theme_minimal()
 
-# meeting notes 10.30.23
-# plot along with stairstep?
+
 # look at accuracy on distractor 
 dist_accb <- V11b %>% group_by(subject) %>%filter(distractorname != 'none', !is.na(distRT)) %>%
   summarize(count = sum(dist == change, na.rm = TRUE), 
@@ -180,6 +179,20 @@ dist_acc <- V11 %>% group_by(subject) %>%filter(distractorname != 'none', !is.na
             total = sum(!is.na(change), na.rm= TRUE)
             ) # everyone was around chance
 
+# plot distractor accuracy against chance
+ggplot() +
+  geom_boxplot(data = dist_acc, aes(x = factor(1), y = (count / total)), fill = "lightblue", alpha = 0.4) +
+  geom_point(data = dist_acc, aes(x = factor(1), y = (count / total)), position = position_jitter(), color = "blue") +
+  geom_boxplot(data = dist_accb, aes(x = factor(2), y = (count / total)), fill = "pink", alpha= 0.4) +
+  geom_point(data = dist_accb, aes(x = factor(2), y = (count / total)), position = position_jitter(), color = "red") +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "purple") +  # Add the horizontal line
+  annotate("text", x = 1.5, y = 0.5, label = "chance", vjust = -1, hjust = 0, color = "purple") +  # Add the label
+  labs(
+    x = "Subjects",
+    y = "Accuracy",
+    title = "Distractor response accuracy"
+  )+
+  scale_x_discrete(labels = c("Good", "Bad"))
 # DONE plot against chance
 # DONE - collate all data that works rectangle  high low noise across attention
 # reach out to Kiyonaga
