@@ -279,10 +279,11 @@ dfV11.circstats_plt %>%
 # BF mixed effects anova
 ```{r}
 # V11
-(BFrmV11 <- anovaBF(circ_sd ~ kappa + distractor + kappa:distractor + id,
-data = dfV11.circstats, whichRandom = "id", whichModels = 'all') )# Bayesian mixed effects ANOVA
-BFrmV11[7]/BFrmV11[4] # evidence of interaction with main effects accounted for
-
+(BFrmV11 <- anovaBF(circ_sd ~ kappa + distractor + kappa*distractor + id,
+data = dfV11.circstats, whichRandom = "id",) )# Bayesian mixed effects ANOVA
+BFrmV11[4]/BFrmV11[3] # no evidence of interaction with main effects accounted for
+BFrmV12[3]/BFrmV12[1] # no/anecdotal evidence of main effect of distractor
+BFrmV12[3]/BFrmV12[2]
 ```
 # Bins of difference between distractor and target
 ``` {r}
